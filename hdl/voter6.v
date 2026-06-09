@@ -13,6 +13,7 @@ module voter6 (
   reg [1:0] shift_reg [0:5];
   reg [2:0] frame_cnt;
   reg [1:0] last_cmd;
+  reg       vote_now;
 
   reg [2:0] count [0:3];
   reg [1:0] winner;
@@ -25,24 +26,28 @@ module voter6 (
       last_cmd  <= 2'b00;
       cmd_out   <= 2'b00;
       cmd_valid <= 1'b0;
+      vote_now  <= 1'b0;
+    end else if (vote_now) begin
+      vote_now <= 1'b0;
+      if (count[winner] >= MIN_VOTES) begin
+        cmd_out   <= winner;
+        cmd_valid <= 1'b1;
+      end else begin
+        cmd_out   <= last_cmd;
+        cmd_valid <= 1'b0;
+      end
+      last_cmd <= cmd_out;
     end else if (s_axis_tvalid && s_axis_tready) begin
       for (k = 5; k > 0; k = k - 1) shift_reg[k] <= shift_reg[k-1];
       shift_reg[0] <= s_axis_tdata;
-      frame_cnt <= frame_cnt + 1;
 
       if (frame_cnt == 3'd5) begin
         frame_cnt <= 3'd0;
-        if (count[winner] >= MIN_VOTES) begin
-          cmd_out   <= winner;
-          cmd_valid <= 1'b1;
-        end else begin
-          cmd_out   <= last_cmd;
-          cmd_valid <= 1'b0;
-        end
-        last_cmd <= cmd_out;
+        vote_now  <= 1'b1;
       end else begin
-        cmd_valid <= 1'b0;
+        frame_cnt <= frame_cnt + 1;
       end
+      cmd_valid <= 1'b0;
     end else begin
       cmd_valid <= 1'b0;
     end
@@ -60,6 +65,6 @@ module voter6 (
     if (count[3] > count[winner]) winner = 2'd3;
   end
 
-  assign s_axis_tready = 1'b1;
+  assign s_axis_tready = !vote_now;
 
 endmodule

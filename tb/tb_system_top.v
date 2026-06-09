@@ -34,6 +34,9 @@ module tb_system_top;
   integer    frame_id;
   integer    n_ok, n_err, n_held;
   integer    window_frame;
+  integer    wait_cnt;
+  reg        got_valid;
+  reg [1:0]  got_cmd;
 
   reg [255:0] frame_file;
   reg [255:0] exp_file;
@@ -66,7 +69,7 @@ module tb_system_top;
     n_ok   = 0;
     n_err  = 0;
     n_held = 0;
-    symbol_id   = 0;
+    symbol_id    = 0;
     window_frame = 0;
 
     for (frame_id = 0; frame_id < n_frames; frame_id = frame_id + 1) begin
@@ -83,33 +86,50 @@ module tb_system_top;
       while (!s_axis_tready) @(posedge aclk);
       s_axis_tvalid = 1'b0;
 
-      @(posedge aclk);
-      while (!cmd_valid && window_frame == 5) begin
-        @(posedge aclk);
-      end
-
       window_frame = window_frame + 1;
+
       if (window_frame == 6) begin
         window_frame = 0;
-        if (!cmd_valid) begin
-          n_held = n_held + 1;
-          $display("[%0t] sym %0d: HELD (no clear majority)", $time, symbol_id);
-        end else if (cmd_out === exp_mem[symbol_id][1:0]) begin
-          n_ok = n_ok + 1;
+
+        // Wait for cmd_valid pulse (timeout 2000 cycles)
+        got_valid = 0;
+        for (wait_cnt = 0; wait_cnt < 2000; wait_cnt = wait_cnt + 1) begin
+          @(posedge aclk);
+          if (cmd_valid) begin
+            got_valid = 1;
+            got_cmd   = cmd_out;
+            wait_cnt  = 200;
+          end
+        end
+
+        if (exp_mem[symbol_id] == 4'hF) begin
+          if (!got_valid) begin
+            n_held = n_held + 1;
+          end else begin
+            n_err = n_err + 1;
+            $display("[%0t] sym %0d: ERROR got %b but expected HELD",
+                     $time, symbol_id, got_cmd);
+          end
         end else begin
-          n_err = n_err + 1;
-          $display("[%0t] sym %0d: MISMATCH got=%b exp=%b",
-                   $time, symbol_id, cmd_out, exp_mem[symbol_id][1:0]);
+          if (!got_valid) begin
+            n_held = n_held + 1;
+            $display("[%0t] sym %0d: HELD (unexpected, exp=%b)",
+                     $time, symbol_id, exp_mem[symbol_id][1:0]);
+          end else if (got_cmd === exp_mem[symbol_id][1:0]) begin
+            n_ok = n_ok + 1;
+          end else begin
+            n_err = n_err + 1;
+            $display("[%0t] sym %0d: MISMATCH got=%b exp=%b",
+                     $time, symbol_id, got_cmd, exp_mem[symbol_id][1:0]);
+          end
         end
         symbol_id = symbol_id + 1;
       end
-
-      #(CLK_PERIOD);
     end
 
     #(CLK_PERIOD * 20);
 
-    $display("RESULT: ok=%0d err=%0d held=%0d", n_ok, n_err, n_held);
+    $display("RESULT: ok=%0d err=%0d held=%0d total=%0d", n_ok, n_err, n_held, n_symbols);
 
     case (TEST_SCENARIO)
       1: if (n_ok == n_symbols)                         begin test_result = "P"; $display(">>> TEST PASS"); end

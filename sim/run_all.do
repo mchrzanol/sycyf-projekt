@@ -37,4 +37,4 @@ puts "============================================"
 puts "=== SUMMARY: $pass_count/$total_tests tests PASSED ==="
 puts "============================================"
 
-quit -f
+echo "Done."

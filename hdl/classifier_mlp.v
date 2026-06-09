@@ -11,15 +11,19 @@ module classifier_mlp (
     input  wire [7:0]   rom_dout
 );
 
-  localparam S_IDLE    = 3'd0,
-             S_HIDDEN  = 3'd1,
-             S_BIAS_H  = 3'd2,
-             S_OUTPUT  = 3'd3,
-             S_BIAS_O  = 3'd4,
-             S_ARGMAX  = 3'd5,
-             S_DONE    = 3'd6;
+  localparam S_IDLE   = 4'd0,
+             S_PRIME  = 4'd1,
+             S_HIDDEN = 4'd2,
+             S_BIASH  = 4'd3,
+             S_BIASH2 = 4'd4,
+             S_OPRIME = 4'd5,
+             S_OUTPUT = 4'd6,
+             S_BIASO  = 4'd7,
+             S_BIASO2 = 4'd8,
+             S_ARGMAX = 4'd9,
+             S_DONE   = 4'd10;
 
-  reg [2:0] state;
+  reg [3:0] state;
   reg [4:0] mac_cnt;
   reg [3:0] neuron_id;
 
@@ -28,6 +32,8 @@ module classifier_mlp (
   reg signed [7:0] hidden_out [0:15];
   reg signed [15:0] logit [0:3];
 
+  reg signed [15:0] acc_biased;
+  reg [1:0] best;
   integer k;
 
   always @(posedge aclk) begin
@@ -47,90 +53,113 @@ module classifier_mlp (
       rom_addr      <= 9'd0;
     end else begin
       case (state)
+
         S_IDLE: begin
           m_axis_tvalid <= 1'b0;
           if (s_axis_tvalid && s_axis_tready) begin
-            state     <= S_HIDDEN;
+            rom_addr  <= 9'd0;
             mac_cnt   <= 5'd0;
             neuron_id <= 4'd0;
             acc       <= 16'sd0;
-            rom_addr  <= 9'd0;
+            state     <= S_PRIME;
           end
+        end
+
+        // ROM needs 1 cycle: addr set in IDLE, data available now
+        // Advance addr so next data is ready next cycle
+        S_PRIME: begin
+          rom_addr <= rom_addr + 1;
+          mac_cnt  <= 5'd1;
+          acc      <= $signed(feature[0]) * $signed(rom_dout);
+          state    <= S_HIDDEN;
         end
 
         S_HIDDEN: begin
           if (mac_cnt < 5'd19) begin
-            acc     <= acc + $signed(feature[mac_cnt]) * $signed(rom_dout);
-            mac_cnt <= mac_cnt + 1;
+            acc      <= acc + $signed(feature[mac_cnt]) * $signed(rom_dout);
+            mac_cnt  <= mac_cnt + 1;
             rom_addr <= rom_addr + 1;
           end else begin
-            state    <= S_BIAS_H;
+            // All 19 weights consumed. Set addr for bias.
             rom_addr <= 9'd304 + {5'd0, neuron_id};
+            state    <= S_BIASH;
           end
         end
 
-        S_BIAS_H: begin
-          begin
-            reg signed [15:0] acc_biased;
-            acc_biased = acc + {{8{rom_dout[7]}}, rom_dout};
-            hidden_out[neuron_id] <= (acc_biased[15] == 1'b0)
-                                   ? acc_biased[11:4]
-                                   : 8'sd0;
-          end
-          acc <= 16'sd0;
+        // Wait 1 cycle for bias ROM data
+        S_BIASH: begin
+          state <= S_BIASH2;
+        end
+
+        S_BIASH2: begin
+          acc_biased = acc + {{8{rom_dout[7]}}, rom_dout};
+          hidden_out[neuron_id] <= (acc_biased[15] == 1'b0)
+                                 ? acc_biased[11:4]
+                                 : 8'sd0;
+          acc     <= 16'sd0;
           mac_cnt <= 5'd0;
           if (neuron_id < 4'd15) begin
             neuron_id <= neuron_id + 1;
-            rom_addr  <= 9'd0 + ({5'd0, neuron_id} + 1) * 19;
-            state     <= S_HIDDEN;
+            rom_addr  <= ({5'd0, neuron_id} + 1) * 19;
+            state     <= S_PRIME;
           end else begin
             neuron_id <= 4'd0;
             rom_addr  <= 9'd320;
-            state     <= S_OUTPUT;
+            state     <= S_OPRIME;
           end
+        end
+
+        // Same as PRIME but for output layer using hidden_out
+        S_OPRIME: begin
+          rom_addr <= rom_addr + 1;
+          mac_cnt  <= 5'd1;
+          acc      <= $signed(hidden_out[0]) * $signed(rom_dout);
+          state    <= S_OUTPUT;
         end
 
         S_OUTPUT: begin
           if (mac_cnt < 5'd16) begin
-            acc     <= acc + $signed(hidden_out[mac_cnt]) * $signed(rom_dout);
-            mac_cnt <= mac_cnt + 1;
+            acc      <= acc + $signed(hidden_out[mac_cnt]) * $signed(rom_dout);
+            mac_cnt  <= mac_cnt + 1;
             rom_addr <= rom_addr + 1;
           end else begin
-            state    <= S_BIAS_O;
             rom_addr <= 9'd384 + {5'd0, neuron_id};
+            state    <= S_BIASO;
           end
         end
 
-        S_BIAS_O: begin
+        // Wait 1 cycle for bias ROM data
+        S_BIASO: begin
+          state <= S_BIASO2;
+        end
+
+        S_BIASO2: begin
           logit[neuron_id] <= acc + {{8{rom_dout[7]}}, rom_dout};
-          acc <= 16'sd0;
+          acc     <= 16'sd0;
           mac_cnt <= 5'd0;
           if (neuron_id < 4'd3) begin
             neuron_id <= neuron_id + 1;
             rom_addr  <= 9'd320 + ({5'd0, neuron_id} + 1) * 16;
-            state     <= S_OUTPUT;
+            state     <= S_OPRIME;
           end else begin
             state <= S_ARGMAX;
           end
         end
 
         S_ARGMAX: begin
-          begin
-            reg [1:0] best;
-            best = 2'd0;
-            if (logit[1] > logit[best]) best = 2'd1;
-            if (logit[2] > logit[best]) best = 2'd2;
-            if (logit[3] > logit[best]) best = 2'd3;
-            m_axis_tdata <= best;
-          end
+          best = 2'd0;
+          if (logit[1] > logit[best]) best = 2'd1;
+          if (logit[2] > logit[best]) best = 2'd2;
+          if (logit[3] > logit[best]) best = 2'd3;
+          m_axis_tdata  <= best;
           m_axis_tvalid <= 1'b1;
-          state <= S_DONE;
+          state         <= S_DONE;
         end
 
         S_DONE: begin
           if (m_axis_tvalid && m_axis_tready) begin
             m_axis_tvalid <= 1'b0;
-            state <= S_IDLE;
+            state         <= S_IDLE;
           end
         end
 
