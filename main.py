@@ -96,9 +96,9 @@ def main():
 
     # 2. Trening MLP (Layer 2)
     print("\n[2] Trenuję MLP...")
-    model = SignMLP(n_in=NUM_FEATURES, n_hidden=24, n_out=NUM_CLASSES, seed=42)
+    model = SignMLP(n_in=NUM_FEATURES, n_hidden=16, n_out=NUM_CLASSES, seed=42)
     train_mlp(model, X_tr, y_tr, X_val, y_val,
-              epochs=80, batch_size=32, lr=0.1, lr_decay=0.97, verbose=True)
+              epochs=150, batch_size=32, lr=0.05, lr_decay=0.98, verbose=True)
     model.save('weights.npz')
     print("  Wagi zapisane do weights.npz")
 
